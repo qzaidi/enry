@@ -28,6 +28,7 @@ func main() {
 	flag.Usage = usage
 	breakdownFlag := flag.Bool("breakdown", false, "")
 	jsonFlag := flag.Bool("json", false, "")
+	stdinFlag := flag.Bool("stdin", false, "Read Paths from stdin")
 	showVersion := flag.Bool("version", false, "Show the enry version information")
 	allLangs := flag.Bool("all", false, "Show all files, including those identifed as non-programming languages")
 	countMode := flag.String("mode", "byte", "the method used to count file size. Available options are: file, line and byte")
@@ -59,7 +60,7 @@ func main() {
 	}
 
 	out := make(map[string][]string, 0)
-	err = filepath.Walk(root, func(path string, f os.FileInfo, err error) error {
+	scanPath := func(path string, f os.FileInfo, err error) error {
 		if err != nil {
 			log.Println(err)
 			return filepath.SkipDir
@@ -69,10 +70,15 @@ func main() {
 			return nil
 		}
 
-		relativePath, err := filepath.Rel(root, path)
-		if err != nil {
-			log.Println(err)
-			return nil
+		var relativePath string
+		if *stdinFlag == false {
+			relativePath, err = filepath.Rel(root, path)
+			if err != nil {
+				log.Println(err)
+				return nil
+			}
+		} else {
+			relativePath = path
 		}
 
 		if relativePath == "." {
@@ -123,7 +129,34 @@ func main() {
 
 		out[language] = append(out[language], relativePath)
 		return nil
-	})
+	}
+
+	if *stdinFlag {
+		// read paths from standard input, and assume cwd to be root
+		br := bufio.NewReader(os.Stdin)
+		for {
+			data, _, err := br.ReadLine()
+			if err == io.EOF {
+				break
+			} else if err != nil {
+				fmt.Println(err)
+				break
+			}
+
+			path := string(data[:])
+
+			if fileInfo, err := os.Stat(path); err == nil {
+				if err = scanPath(path, fileInfo, nil); err != nil {
+					log.Println("scan error:", path, err)
+				}
+			} else {
+				//log.Println("skipping ",path,err)
+				continue
+			}
+		}
+	} else {
+		err = filepath.Walk(root, scanPath)
+	}
 
 	if err != nil {
 		log.Fatal(err)
@@ -154,6 +187,7 @@ func usage() {
   usage: %[1]s [-mode=(file|line|byte)] [-prog] <path>
          %[1]s [-mode=(file|line|byte)] [-prog] [-json] [-breakdown] <path>
          %[1]s [-mode=(file|line|byte)] [-prog] [-json] [-breakdown]
+         %[1]s [-mode=(file|line|byte)] [-prog] [-json] [-breakdown] [-stdin]
          %[1]s [-version]
 `,
 		os.Args[0], version, build, commit, data.LinguistCommit[:7],
