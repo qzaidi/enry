@@ -16,6 +16,8 @@ import (
 
 	"github.com/src-d/enry/v2"
 	"github.com/src-d/enry/v2/data"
+
+	"gopkg.in/src-d/go-git.v4"
 )
 
 var (
@@ -27,6 +29,7 @@ var (
 func main() {
 	flag.Usage = usage
 	breakdownFlag := flag.Bool("breakdown", false, "")
+	author := flag.String("author", "", "filter by author, requires .git")
 	jsonFlag := flag.Bool("json", false, "")
 	stdinFlag := flag.Bool("stdin", false, "Read Paths from stdin")
 	showVersion := flag.Bool("version", false, "Show the enry version information")
@@ -168,6 +171,12 @@ func main() {
 		printJson(out, &buf)
 	case *jsonFlag && *breakdownFlag:
 		printBreakDown(out, &buf)
+	case *author != "":
+		if reducer, err := getGitBlameByAuthorReducer(root, *author); err == nil {
+			printPercentsWithReducerFunc(root, out, &buf, reducer)
+		} else {
+			fmt.Println("error:", err)
+		}
 	case *breakdownFlag:
 		printPercents(root, out, &buf, *countMode)
 		buf.WriteByte('\n')
@@ -177,6 +186,50 @@ func main() {
 	}
 
 	fmt.Print(buf.String())
+}
+
+func getGitBlameByAuthorReducer(path, author string) (reducerFunc, error) {
+
+	// first, verify that this is a git repo. If so, return a function that can read git blame output and filter by our given author
+	if _, err := os.Stat(".git"); err != nil {
+		return nil, err
+	}
+
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		return nil, err
+	}
+
+	ref, err := repo.Head()
+	if err != nil {
+		return nil, err
+	}
+
+	c, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		return nil, err
+	}
+
+	return func(root string, files []string) (float64, filelistError) {
+		// open each file in files, run git blame, filter lines for the given author, count them and return
+		errFiles := []string{}
+		var totalLines float64
+		for _, filename := range files {
+			bs, err := git.Blame(c, filename)
+			if err != nil {
+				errFiles = append(errFiles, filename)
+				continue
+			}
+			// process lines in blame result, match with author, blah blah blah
+
+			for _, l := range bs.Lines {
+				if strings.Contains(l.Author, author) {
+					totalLines = totalLines + 1
+				}
+			}
+		}
+		return totalLines, errFiles
+	}, nil
 }
 
 func usage() {
@@ -216,6 +269,8 @@ func (e filelistError) Error() string {
 	return fmt.Sprintf("Could not process the following files:\n%s", strings.Join(e, "\n"))
 }
 
+type reducerFunc func(_ string, files []string) (float64, filelistError)
+
 func printPercents(root string, fSummary map[string][]string, buff *bytes.Buffer, mode string) {
 	// Select the way we quantify 'amount' of code.
 	reducer := fileCountValues
@@ -227,6 +282,10 @@ func printPercents(root string, fSummary map[string][]string, buff *bytes.Buffer
 	case "byte":
 		reducer = byteCountValues
 	}
+	printPercentsWithReducerFunc(root, fSummary, buff, reducer)
+}
+
+func printPercentsWithReducerFunc(root string, fSummary map[string][]string, buff *bytes.Buffer, reducer reducerFunc) {
 
 	// Reduce the list of files to a quantity of file type.
 	var (
